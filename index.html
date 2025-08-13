@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live ASCII Text</title>
+  <style>
+    :root{--bg:#0f0f10;--ghost:#d1d5db22;--fg:#e5e7eb}
+    html,body{height:100%;margin:0}
+    body{background:var(--bg);color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;overflow:hidden}
+
+    /* Vollflächige Ebenen */
+    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;user-select:none}
+    .big-text{position:fixed;inset:0;display:grid;place-items:center;font-size:clamp(48px,18vw,36vh);font-weight:900;letter-spacing:.02em;color:var(--ghost);white-space:pre;pointer-events:none;user-select:none}
+    .ghost-input{position:fixed;inset:0;opacity:0;border:0;outline:0}
+    canvas#anim{position:fixed;inset:0;display:none}
+  </style>
+</head>
+<body>
+  <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" />
+  <div id="ghost" class="big-text">Gib etwas ein</div>
+  <pre id="ascii"></pre>
+  <canvas id="anim"></canvas>
+  <canvas id="work" style="display:none"></canvas>
+
+  <script>
+    const hidden = document.getElementById('hidden');
+    const ghost  = document.getElementById('ghost');
+    const ascii  = document.getElementById('ascii');
+    const work   = document.getElementById('work');
+    const anim   = document.getElementById('anim');
+    const ctx    = work.getContext('2d');
+    const actx   = anim.getContext('2d');
+
+    const CHARSET = " .'`^:,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"; // hell -> dunkel
+
+    let lastGrid = []; // speichert letzte ASCII-Zellen (für Animation)
+    let cellSize = 8;  // wird dynamisch gesetzt
+    let isAnimating = false;
+
+    function computeCellSize(W){
+      const targetCols = Math.max(80, Math.min(220, Math.round(W/8)));
+      return Math.max(4, Math.floor(W/targetCols));
+    }
+
+    function renderASCII(text){
+      const W = work.width  = Math.round(window.innerWidth);
+      const H = work.height = Math.round(window.innerHeight);
+
+      // Hintergrund leeren
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0,0,W,H);
+
+      // Großes Wort zeichnen – Buchstaben mit Verlauf über Wortlänge
+      const single = (text||'').replace(/\n/g,' ');
+      const len = single.length || 1;
+      const base = Math.min(W, H) * 0.6;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.font = `900 ${base}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif`;
+      const em = ctx.measureText('M').width || (base*0.6);
+      for(let i=0;i<len;i++){
+        const ch = single[i] || '';
+        const g  = Math.floor(255 * (i / (len - 1 || 1)));
+        ctx.fillStyle = `rgb(${g},${g},${g})`;
+        const x = (W/2) - (em*((len-1)/2 - i));
+        ctx.fillText(ch, x, H/2);
+      }
+
+      // ASCII-Sampling adaptiv
+      cellSize = computeCellSize(W);
+      ascii.style.fontSize  = cellSize + 'px';
+      ascii.style.lineHeight= cellSize + 'px';
+
+      const data = ctx.getImageData(0,0,W,H).data;
+      let out='';
+      lastGrid = [];
+      for(let y=0;y<H;y+=cellSize){
+        for(let x=0;x<W;x+=cellSize){
+          const idx=(y*W + x)*4;
+          const r=data[idx], g=data[idx+1], b=data[idx+2];
+          const lum = (0.2126*r + 0.7152*g + 0.0722*b);
+          const ch = CHARSET[Math.floor((lum/255)*(CHARSET.length-1))];
+          out += `<span style=\"color:rgb(${r},${g},${b})\">${ch}</span>`;
+          lastGrid.push({x:x+cellSize/2, y:y+cellSize/2, ch, color:`rgb(${r},${g},${b})`});
+        }
+        out += "\n";
+      }
+      ascii.innerHTML = out;
+    }
+
+    function update(){
+      const t = hidden.value;
+      ghost.textContent = t || 'Gib etwas ein';
+      renderASCII(t);
+    }
+
+    // Enter löscht den Text
+    hidden.addEventListener('keydown', (e)=>{
+      if(e.key==='Enter') { e.preventDefault(); hidden.value=''; update(); }
+      if(e.code==='Space'){ e.preventDefault(); triggerFall(); }
+    });
+    hidden.addEventListener('input', ()=>{ if(!isAnimating) update(); });
+
+    // Immer fokusiert bleiben
+    const refocus=()=>hidden.focus();
+    window.addEventListener('click', refocus);
+    window.addEventListener('load', ()=>{ refocus(); renderASCII(''); });
+    window.addEventListener('resize', ()=>{ if(!isAnimating) renderASCII(hidden.value); });
+
+    // --- Physik-Animation bei Leertaste ---
+    function triggerFall(){
+      if(isAnimating || lastGrid.length===0) return;
+      isAnimating = true;
+      ascii.style.display = 'none';
+      anim.width  = window.innerWidth;
+      anim.height = window.innerHeight;
+      anim.style.display = 'block';
+
+      const floor = anim.height - cellSize * 0.5;
+      // Physik-Parameter (px und s)
+      const g = 2000;               // Schwerkraft (angepasst für zügige Animation)
+      const restitution = 0.48;     // Rückprallfaktor
+      const air = 0.995;            // Luftwiderstand
+      const friction = 0.985;       // Reibung am Boden
+
+      // Partikel aus Raster erzeugen
+      const parts = lastGrid.map(p=>({
+        x:p.x, y:p.y, vx:(Math.random()-0.5)*120, vy:0,
+        ch:p.ch, color:p.color, bounces:0, settled:false
+      }));
+
+      actx.font = `${cellSize}px ui-monospace, monospace`;
+      actx.textAlign = 'center';
+      actx.textBaseline = 'middle';
+
+      let last = performance.now();
+      function frame(now){
+        const dt = Math.min(0.033, (now-last)/1000); // max 33 ms Schritt
+        last = now;
+
+        actx.clearRect(0,0,anim.width,anim.height);
+
+        let allSettled = true;
+        for(const p of parts){
+          if(!p.settled){
+            // Bewegung integrieren
+            p.vy += g*dt;
+            p.vx *= air;
+            p.x  += p.vx*dt;
+            p.y  += p.vy*dt;
+
+            // Boden-Kollision
+            if(p.y > floor){
+              p.y = floor;
+              p.vy = -p.vy * restitution;
+              p.vx *= friction;
+              p.bounces++;
+              if(Math.abs(p.vy) < 60 || p.bounces >= 3){
+                p.vy = 0; p.settled = true;
+              }
+            }
+            // Rand-Kollisionen
+            if(p.x < cellSize*0.5){ p.x = cellSize*0.5; p.vx = -p.vx*0.6; }
+            if(p.x > anim.width - cellSize*0.5){ p.x = anim.width - cellSize*0.5; p.vx = -p.vx*0.6; }
+          }
+          if(!p.settled) allSettled = false;
+          actx.fillStyle = p.color;
+          actx.fillText(p.ch, p.x, p.y);
+        }
+
+        if(allSettled){
+          // Animation beenden
+          isAnimating = false;
+          anim.style.display = 'none';
+          ascii.style.display = 'block';
+          // Nach dem Fall bleibt das Raster unverändert; neu rendern hält es aktuell
+          renderASCII(hidden.value);
+        } else {
+          requestAnimationFrame(frame);
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+  </script>
+</body>
+</html>
