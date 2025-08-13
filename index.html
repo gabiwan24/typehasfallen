@@ -5,25 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Live ASCII Text</title>
   <style>
-    :root{--bg:#0f0f10;--fg:#e5e7eb}
+    :root{--bg:#0f0f10;--fg:#e5e7eb;--bar:#1f2937;--barText:#cbd5e1}
     html,body{height:100%;margin:0}
-    body{background:var(--bg);color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;overflow:hidden}
+    body{background:var(--bg);color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;overflow:hidden;user-select:none}
+
+    /* Obere Tap-Leiste (Mobile): "Type!" */
+    .topbar{position:fixed;left:0;right:0;top:0;height:56px;background:var(--bar);color:var(--barText);display:flex;align-items:center;justify-content:center;gap:.75rem;font-weight:700;letter-spacing:.02em;z-index:10}
+    .topbar .label{pointer-events:none}
+    /* Unsichtbares Eingabefeld liegt NUR über der Topbar */
+    .topbar .ghost-input{position:absolute;inset:0;opacity:0;border:0;outline:0}
 
     /* ASCII-Bühne (einzige sichtbare Schrift) */
-    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;font-family:inherit;font-variant-ligatures:none;letter-spacing:0;user-select:none}
-
-    /* Unsichtbares Eingabefeld */
-    .ghost-input{position:fixed;inset:0;opacity:0;border:0;outline:0}
+    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;font-family:inherit;font-variant-ligatures:none;letter-spacing:0}
 
     /* Animations-Canvas */
     canvas#anim{position:fixed;inset:0;display:none}
 
     /* Legende unten links */
-    .legend{position:fixed;left:12px;bottom:10px;font-size:12px;opacity:.9;color:#9ca3af;user-select:none;line-height:1.35}
+    .legend{position:fixed;left:12px;bottom:10px;font-size:12px;opacity:.9;color:#9ca3af;line-height:1.35}
   </style>
 </head>
 <body>
-  <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" maxlength="20" />
+  <!-- Tap-Leiste für Mobile: Tippen zum Öffnen der Tastatur -->
+  <div id="topbar" class="topbar">
+    <span class="label">Type!</span>
+    <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" maxlength="20" />
+  </div>
+
   <pre id="ascii"></pre>
   <div id="legend" class="legend"></div>
   <canvas id="anim"></canvas>
@@ -35,6 +43,7 @@
     const work   = document.getElementById('work');
     const anim   = document.getElementById('anim');
     const legend = document.getElementById('legend');
+    const topbar = document.getElementById('topbar');
     const ctx    = work.getContext('2d');
     const actx   = anim.getContext('2d');
 
@@ -56,7 +65,7 @@
     const mouse = { x: 0, y: 0, r: 40, active: false };
     function updateMouseRadius(){ mouse.r = Math.max(20, Math.round(cellSize * 2.5)); }
 
-    // DESKTOP: Maus folgt (optional). MOBILE: Position bleibt dort, wo getippt wurde
+    // DESKTOP: Maus folgt. MOBILE: Position bleibt dort, wo getippt wurde
     window.addEventListener('pointermove', (e)=>{ if(!allowMouseFollow) return; mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
     window.addEventListener('pointerleave', ()=>{ if(!allowMouseFollow) mouse.active = false; });
 
@@ -77,10 +86,19 @@
       if(hidden.value && !isAnimating) triggerFall();
     }
 
-    // Pointer-Down: Desktop (nur Cursor setzen), Mobile (Tap-Handling)
+    // Pointer-Down: Desktop vs. Mobile, gezielt gesteuert
+    // Desktop: überall klicken setzt Mausposition; Mobile: Topbar = Tastatur, ASCII = Taps
     window.addEventListener('pointerdown', (e)=>{
-      if(isMobile){ handleTap(e.clientX, e.clientY); }
-      else { mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; }
+      const withinTopbar = e.clientY <= 56; // Höhe der Topbar
+      if(isMobile){
+        if(withinTopbar){ // Tastatur öffnen
+          hidden.focus({ preventScroll:true });
+        } else { // nur im ASCII-Bereich tappen
+          handleTap(e.clientX, e.clientY);
+        }
+      } else {
+        mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true;
+      }
     });
 
     function computeCellSize(W){
@@ -148,7 +166,7 @@
           const r=data[idx], g=data[idx+1], b=data[idx+2];
           const lum = (0.2126*r + 0.7152*g + 0.0722*b);
           const ch = CHARSET[Math.floor((lum/255)*(CHARSET.length-1))];
-          out += `<span style="color:rgb(${r},${g},${b})">${ch}</span>`;
+          out += `<span style=\"color:rgb(${r},${g},${b})\">${ch}</span>`;
           lastGrid.push({ci:x, ri:y, ch, color:`rgb(${r},${g},${b})`});
         }
         out += "\n";
@@ -167,7 +185,6 @@
 
     // Nur am Desktop automatisch fokussieren
     const refocus=()=>{ if(!isMobile) hidden.focus(); };
-    window.addEventListener('click', refocus);
     window.addEventListener('load', ()=>{ refocus(); renderASCII(''); updateLegend(); });
     window.addEventListener('resize', ()=>{ if(!isAnimating) renderASCII(hidden.value); });
 
@@ -281,6 +298,16 @@
         }
       })(last);
     }
+
+    // Initialisieren
+    function updateLegend(){
+      if(isMobile){
+        legend.innerHTML = 'Type something!<br>Single Tap: Drop it like it\'s hot.<br>Double Tap: Delete Text';
+      } else {
+        legend.innerHTML = 'Type something!<br>Enter: Delete Text<br>↓: Drop it like it\'s hot!';
+      }
+    }
+    window.addEventListener('load', ()=>{ if(!isMobile) hidden.focus(); renderASCII(''); updateLegend(); });
   </script>
 </body>
 </html>
