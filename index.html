@@ -2,11 +2,12 @@
 <html lang="de">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Mobile: kein Zoomen, keine Scrollbars -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Live ASCII Text</title>
   <style>
     :root{--bg:#0f0f10;--fg:#e5e7eb;--bar:#1f2937;--barText:#cbd5e1}
-    html,body{height:100%;margin:0}
+    html,body{height:100dvh;margin:0;overscroll-behavior:none;touch-action:manipulation}
     body{background:var(--bg);color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;overflow:hidden;user-select:none}
 
     /* Obere Tap-Leiste (Mobile): "Type!" */
@@ -16,7 +17,7 @@
     .topbar .ghost-input{position:absolute;inset:0;opacity:0;border:0;outline:0}
 
     /* ASCII-Bühne (einzige sichtbare Schrift) */
-    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;font-family:inherit;font-variant-ligatures:none;letter-spacing:0}
+    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;font-family:inherit;font-variant-ligatures:none;letter-spacing:0;overflow:hidden}
 
     /* Animations-Canvas */
     canvas#anim{position:fixed;inset:0;display:none}
@@ -29,7 +30,7 @@
   <!-- Tap-Leiste für Mobile: Tippen zum Öffnen der Tastatur -->
   <div id="topbar" class="topbar">
     <span class="label">Type!</span>
-    <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" maxlength="20" />
+    <input id="hidden" class="ghost-input" type="text" inputmode="text" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" maxlength="20" />
   </div>
 
   <pre id="ascii"></pre>
@@ -92,13 +93,20 @@
       const withinTopbar = e.clientY <= 56; // Höhe der Topbar
       if(isMobile){
         if(withinTopbar){ // Tastatur öffnen
+          e.preventDefault();
           hidden.focus({ preventScroll:true });
         } else { // nur im ASCII-Bereich tappen
+          e.preventDefault();
           handleTap(e.clientX, e.clientY);
         }
       } else {
         mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true;
       }
+    });
+
+    // Zusätzlich: Gesten-Zoom verhindern (iOS)
+    ['gesturestart','gesturechange','gestureend'].forEach(evt=>{
+      document.addEventListener(evt, ev=>ev.preventDefault(), {passive:false});
     });
 
     function computeCellSize(W){
@@ -181,12 +189,9 @@
       if(e.key==='Enter') { e.preventDefault(); hidden.value=''; update(); }
       if(!isMobile && e.key==='ArrowDown'){ e.preventDefault(); triggerFall(); }
     });
+    // Sicherstellen, dass Mobil-Eingaben immer rendern
     hidden.addEventListener('input', ()=>{ if(!isAnimating) update(); });
-
-    // Nur am Desktop automatisch fokussieren
-    const refocus=()=>{ if(!isMobile) hidden.focus(); };
-    window.addEventListener('load', ()=>{ refocus(); renderASCII(''); updateLegend(); });
-    window.addEventListener('resize', ()=>{ if(!isAnimating) renderASCII(hidden.value); });
+    hidden.addEventListener('keyup', ()=>{ if(!isAnimating) update(); });
 
     function updateLegend(){
       if(isMobile){
