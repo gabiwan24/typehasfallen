@@ -18,14 +18,14 @@
     /* Animations-Canvas */
     canvas#anim{position:fixed;inset:0;display:none}
 
-    /* Kleine Legende unten links */
-    .legend{position:fixed;left:12px;bottom:10px;font-size:12px;opacity:.85;color:#9ca3af;user-select:none}
+    /* Legende unten links */
+    .legend{position:fixed;left:12px;bottom:10px;font-size:12px;opacity:.9;color:#9ca3af;user-select:none;line-height:1.35}
   </style>
 </head>
 <body>
   <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" maxlength="20" />
   <pre id="ascii"></pre>
-  <div class="legend">Enter: Delete Text<br>↓: Drop it like it's hot!</div>
+  <div id="legend" class="legend"></div>
   <canvas id="anim"></canvas>
   <canvas id="work" style="display:none"></canvas>
 
@@ -34,8 +34,13 @@
     const ascii  = document.getElementById('ascii');
     const work   = document.getElementById('work');
     const anim   = document.getElementById('anim');
+    const legend = document.getElementById('legend');
     const ctx    = work.getContext('2d');
     const actx   = anim.getContext('2d');
+
+    // Mobile-Erkennung
+    const isMobile = (matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches) || ('ontouchstart' in window);
+    const allowMouseFollow = !isMobile; // Maus folgt nur am Desktop
 
     // Zeichen von hell -> dunkel (Backslashes korrekt escaped)
     const CHARSET = " .'`^:,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
@@ -47,13 +52,36 @@
     let gridCols = 0, gridRows = 0;    // Spalten/Zeilen des ASCII-Layouts
     let isAnimating = false;
 
-    // Maus-Collider (halber Radius)
+    // Maus-/Finger-Collider (halber Radius vs. vorher)
     const mouse = { x: 0, y: 0, r: 40, active: false };
     function updateMouseRadius(){ mouse.r = Math.max(20, Math.round(cellSize * 2.5)); }
-    window.addEventListener('pointermove', (e)=>{ mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
-    window.addEventListener('pointerdown', (e)=>{ mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
-    window.addEventListener('pointerup', ()=>{ mouse.active = true; });
-    window.addEventListener('pointerleave', ()=>{ mouse.active = false; });
+
+    // DESKTOP: Maus folgt (optional). MOBILE: Position bleibt dort, wo getippt wurde
+    window.addEventListener('pointermove', (e)=>{ if(!allowMouseFollow) return; mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
+    window.addEventListener('pointerleave', ()=>{ if(!allowMouseFollow) mouse.active = false; });
+
+    // MOBILE: Taps -> Single: Drop, Double: Delete
+    let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
+    function handleTap(x,y){
+      const now = performance.now();
+      const dt = now - lastTapTime;
+      const dist = Math.hypot(x-lastTapX, y-lastTapY);
+      lastTapTime = now; lastTapX = x; lastTapY = y;
+      if(dt < 320 && dist < 48){ // Double Tap -> Enter/Delete
+        hidden.value = '';
+        if(!isAnimating) renderASCII('');
+        return;
+      }
+      // Single Tap -> Finger-Maus positionieren (statisch) und Fallen auslösen
+      mouse.x = x; mouse.y = y; mouse.active = true;
+      if(hidden.value && !isAnimating) triggerFall();
+    }
+
+    // Pointer-Down: Desktop (nur Cursor setzen), Mobile (Tap-Handling)
+    window.addEventListener('pointerdown', (e)=>{
+      if(isMobile){ handleTap(e.clientX, e.clientY); }
+      else { mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; }
+    });
 
     function computeCellSize(W){
       const targetCols = Math.max(80, Math.min(220, Math.round(W/8)));
@@ -128,23 +156,30 @@
       ascii.innerHTML = out;
     }
 
-    function update(){
-      renderASCII(hidden.value);
-    }
+    function update(){ renderASCII(hidden.value); }
 
-    // Eingabe-Handling
+    // Tastatur (Desktop) + Eingabe
     hidden.addEventListener('keydown', (e)=>{
       if(e.key==='Enter') { e.preventDefault(); hidden.value=''; update(); }
-      if(e.key==='ArrowDown'){ e.preventDefault(); triggerFall(); }
+      if(!isMobile && e.key==='ArrowDown'){ e.preventDefault(); triggerFall(); }
     });
     hidden.addEventListener('input', ()=>{ if(!isAnimating) update(); });
 
-    const refocus=()=>hidden.focus();
+    // Nur am Desktop automatisch fokussieren
+    const refocus=()=>{ if(!isMobile) hidden.focus(); };
     window.addEventListener('click', refocus);
-    window.addEventListener('load', ()=>{ refocus(); renderASCII(''); });
+    window.addEventListener('load', ()=>{ refocus(); renderASCII(''); updateLegend(); });
     window.addEventListener('resize', ()=>{ if(!isAnimating) renderASCII(hidden.value); });
 
-    // --- Animation exakt aus dem ASCII-Raster + Maus-Collider ---
+    function updateLegend(){
+      if(isMobile){
+        legend.innerHTML = 'Type something!<br>Single Tap: Drop it like it\'s hot.<br>Double Tap: Delete Text';
+      } else {
+        legend.innerHTML = 'Type something!<br>Enter: Delete Text<br>↓: Drop it like it\'s hot!';
+      }
+    }
+
+    // --- Animation exakt aus dem ASCII-Raster + Maus/Finger-Collider ---
     function triggerFall(){
       if(isAnimating || lastGrid.length===0) return;
       isAnimating = true;
@@ -195,7 +230,7 @@
             p.x  += p.vx*dt;
             p.y  += p.vy*dt;
 
-            // Maus-Kollision (Kreis)
+            // Kreis-Collider (Maus/Finger)
             if(mouse.active){
               const dx = p.x - mouse.x;
               const dy = p.y - mouse.y;
@@ -205,17 +240,14 @@
                 const nx = (dist>0? dx/dist : 1);
                 const ny = (dist>0? dy/dist : 0);
                 const overlap = (R - dist) + 0.5;
-                // raus schieben
                 p.x += nx * overlap;
                 p.y += ny * overlap;
-                // Geschwindigkeit an der Normalen reflektieren
                 const vn = p.vx*nx + p.vy*ny;
                 const e = 0.6; // Elastizität
                 if(vn < 0){
                   p.vx -= (1+e) * vn * nx;
                   p.vy -= (1+e) * vn * ny;
                 }
-                // tangentiale Dämpfung
                 p.vx *= 0.98; p.vy *= 0.98;
               }
             }
