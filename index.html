@@ -5,38 +5,55 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Live ASCII Text</title>
   <style>
-    :root{--bg:#0f0f10;--ghost:#d1d5db22;--fg:#e5e7eb}
+    :root{--bg:#0f0f10;--fg:#e5e7eb}
     html,body{height:100%;margin:0}
     body{background:var(--bg);color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;overflow:hidden}
 
-    /* Vollflächige Ebenen */
-    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;user-select:none}
-    .big-text{position:fixed;inset:0;display:grid;place-items:center;font-size:clamp(48px,18vw,36vh);font-weight:900;letter-spacing:.02em;color:var(--ghost);white-space:pre;pointer-events:none;user-select:none}
+    /* ASCII-Bühne (einzige sichtbare Schrift) */
+    pre#ascii{position:fixed;inset:0;margin:0;white-space:pre;text-align:center;line-height:1;font-family:inherit;font-variant-ligatures:none;letter-spacing:0;user-select:none}
+
+    /* Unsichtbares Eingabefeld */
     .ghost-input{position:fixed;inset:0;opacity:0;border:0;outline:0}
+
+    /* Animations-Canvas */
     canvas#anim{position:fixed;inset:0;display:none}
+
+    /* Kleine Legende unten links */
+    .legend{position:fixed;left:12px;bottom:10px;font-size:12px;opacity:.85;color:#9ca3af;user-select:none}
   </style>
 </head>
 <body>
-  <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" />
-  <div id="ghost" class="big-text">Gib etwas ein</div>
+  <input id="hidden" class="ghost-input" autocomplete="off" spellcheck="false" maxlength="20" />
   <pre id="ascii"></pre>
+  <div class="legend">Enter: Delete Text<br>↓: Drop it like it's hot!</div>
   <canvas id="anim"></canvas>
   <canvas id="work" style="display:none"></canvas>
 
   <script>
     const hidden = document.getElementById('hidden');
-    const ghost  = document.getElementById('ghost');
     const ascii  = document.getElementById('ascii');
     const work   = document.getElementById('work');
     const anim   = document.getElementById('anim');
     const ctx    = work.getContext('2d');
     const actx   = anim.getContext('2d');
 
-    const CHARSET = " .'`^:,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"; // hell -> dunkel
+    // Zeichen von hell -> dunkel (Backslashes korrekt escaped)
+    const CHARSET = " .'`^:,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+    const MAX_LEN = 20;
 
-    let lastGrid = []; // speichert letzte ASCII-Zellen (für Animation)
-    let cellSize = 8;  // wird dynamisch gesetzt
+    // Zustände
+    let lastGrid = [];                 // {ci, ri, ch, color}
+    let cellSize = 8;
+    let gridCols = 0, gridRows = 0;    // Spalten/Zeilen des ASCII-Layouts
     let isAnimating = false;
+
+    // Maus-Collider (halber Radius)
+    const mouse = { x: 0, y: 0, r: 40, active: false };
+    function updateMouseRadius(){ mouse.r = Math.max(20, Math.round(cellSize * 2.5)); }
+    window.addEventListener('pointermove', (e)=>{ mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
+    window.addEventListener('pointerdown', (e)=>{ mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
+    window.addEventListener('pointerup', ()=>{ mouse.active = true; });
+    window.addEventListener('pointerleave', ()=>{ mouse.active = false; });
 
     function computeCellSize(W){
       const targetCols = Math.max(80, Math.min(220, Math.round(W/8)));
@@ -47,43 +64,64 @@
       const W = work.width  = Math.round(window.innerWidth);
       const H = work.height = Math.round(window.innerHeight);
 
-      // Hintergrund leeren
+      // Hintergrund
       ctx.clearRect(0,0,W,H);
       ctx.fillStyle = '#000';
       ctx.fillRect(0,0,W,H);
 
-      // Großes Wort zeichnen – Buchstaben mit Verlauf über Wortlänge
-      const single = (text||'').replace(/\n/g,' ');
-      const len = single.length || 1;
-      const base = Math.min(W, H) * 0.6;
+      // Großes Wort als Grundlage NUR im Hidden-Canvas zeichnen (sehr fette Schrift)
+      const safe = (text||'').slice(0, MAX_LEN).replace(/\n/g,' ');
+      if (text && text.length > MAX_LEN) hidden.value = safe; // Hard-Limit auch am Input
+      const len = safe.length || 1;
+
+      // Startgröße und Breitenanpassung (bis 20 Zeichen wird proportional kleiner)
+      const base0 = Math.min(W, H) * 0.6;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      ctx.font = `900 ${base}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif`;
+      // Sehr fette Fonts bevorzugen
+      ctx.font = `900 ${base0}px Impact, 'Arial Black', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif`;
+      const em0 = ctx.measureText('M').width || (base0*0.6);
+      const scaleW = Math.min(1, (W*0.9) / (em0 * len));
+      const base  = Math.max(16, base0 * scaleW);
+      ctx.font = `900 ${base}px Impact, 'Arial Black', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif`;
       const em = ctx.measureText('M').width || (base*0.6);
+
+      const minGray = 60; // erster Buchstabe sichtbar
       for(let i=0;i<len;i++){
-        const ch = single[i] || '';
-        const g  = Math.floor(255 * (i / (len - 1 || 1)));
+        const ch = safe[i] || '';
+        const g  = Math.round(minGray + ((len>1? i/(len-1) : 1) * (255 - minGray)));
         ctx.fillStyle = `rgb(${g},${g},${g})`;
         const x = (W/2) - (em*((len-1)/2 - i));
+        // dicker zeichnen: leicht versetzte Mehrfachfüllung
         ctx.fillText(ch, x, H/2);
+        ctx.fillText(ch, x+1, H/2);
+        ctx.fillText(ch, x-1, H/2);
+        ctx.fillText(ch, x, H/2+1);
+        ctx.fillText(ch, x, H/2-1);
       }
 
-      // ASCII-Sampling adaptiv
+      // ASCII-Sampling
       cellSize = computeCellSize(W);
+      updateMouseRadius();
       ascii.style.fontSize  = cellSize + 'px';
       ascii.style.lineHeight= cellSize + 'px';
 
       const data = ctx.getImageData(0,0,W,H).data;
-      let out='';
       lastGrid = [];
-      for(let y=0;y<H;y+=cellSize){
-        for(let x=0;x<W;x+=cellSize){
-          const idx=(y*W + x)*4;
+      gridCols = Math.floor(W / cellSize);
+      gridRows = Math.floor(H / cellSize);
+
+      let out='';
+      for(let y=0;y<gridRows;y++){
+        for(let x=0;x<gridCols;x++){
+          const px = x*cellSize;
+          const py = y*cellSize;
+          const idx=(py*W + px)*4;
           const r=data[idx], g=data[idx+1], b=data[idx+2];
           const lum = (0.2126*r + 0.7152*g + 0.0722*b);
           const ch = CHARSET[Math.floor((lum/255)*(CHARSET.length-1))];
-          out += `<span style=\"color:rgb(${r},${g},${b})\">${ch}</span>`;
-          lastGrid.push({x:x+cellSize/2, y:y+cellSize/2, ch, color:`rgb(${r},${g},${b})`});
+          out += `<span style="color:rgb(${r},${g},${b})">${ch}</span>`;
+          lastGrid.push({ci:x, ri:y, ch, color:`rgb(${r},${g},${b})`});
         }
         out += "\n";
       }
@@ -91,25 +129,22 @@
     }
 
     function update(){
-      const t = hidden.value;
-      ghost.textContent = t || 'Gib etwas ein';
-      renderASCII(t);
+      renderASCII(hidden.value);
     }
 
-    // Enter löscht den Text
+    // Eingabe-Handling
     hidden.addEventListener('keydown', (e)=>{
       if(e.key==='Enter') { e.preventDefault(); hidden.value=''; update(); }
-      if(e.code==='Space'){ e.preventDefault(); triggerFall(); }
+      if(e.key==='ArrowDown'){ e.preventDefault(); triggerFall(); }
     });
     hidden.addEventListener('input', ()=>{ if(!isAnimating) update(); });
 
-    // Immer fokusiert bleiben
     const refocus=()=>hidden.focus();
     window.addEventListener('click', refocus);
     window.addEventListener('load', ()=>{ refocus(); renderASCII(''); });
     window.addEventListener('resize', ()=>{ if(!isAnimating) renderASCII(hidden.value); });
 
-    // --- Physik-Animation bei Leertaste ---
+    // --- Animation exakt aus dem ASCII-Raster + Maus-Collider ---
     function triggerFall(){
       if(isAnimating || lastGrid.length===0) return;
       isAnimating = true;
@@ -119,51 +154,85 @@
       anim.style.display = 'block';
 
       const floor = anim.height - cellSize * 0.5;
-      // Physik-Parameter (px und s)
-      const g = 2000;               // Schwerkraft (angepasst für zügige Animation)
-      const restitution = 0.48;     // Rückprallfaktor
-      const air = 0.995;            // Luftwiderstand
-      const friction = 0.985;       // Reibung am Boden
+      const G = 2000;
 
-      // Partikel aus Raster erzeugen
-      const parts = lastGrid.map(p=>({
-        x:p.x, y:p.y, vx:(Math.random()-0.5)*120, vy:0,
-        ch:p.ch, color:p.color, bounces:0, settled:false
-      }));
-
-      actx.font = `${cellSize}px ui-monospace, monospace`;
+      // gleiche Typografie wie im <pre>
+      actx.font = `${cellSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace`;
       actx.textAlign = 'center';
       actx.textBaseline = 'middle';
+      const charW = actx.measureText('M').width; // reale Zeichenbreite
+      const charH = cellSize;
+      const left  = (anim.width  - gridCols*charW) / 2;
+      const top   = (anim.height - gridRows*charH) / 2;
+
+      const parts = lastGrid.map(p=>({
+        x: left + (p.ci + 0.5)*charW,
+        y: top  + (p.ri + 0.5)*charH,
+        vx:(Math.random()-0.5)*30,
+        vy:(Math.random()-0.5)*20,
+        ch:p.ch, color:p.color,
+        gScale: 0.98 + Math.random()*0.04,
+        air:    0.994 + Math.random()*0.004,
+        rest:   0.48 + Math.random()*0.18,
+        fric:   0.975 + Math.random()*0.025,
+        settleV: 50 + Math.random()*25,
+        maxBounces: 2 + Math.round(Math.random()),
+        bounces:0, settled:false
+      }));
 
       let last = performance.now();
-      function frame(now){
-        const dt = Math.min(0.033, (now-last)/1000); // max 33 ms Schritt
+      (function frame(now){
+        const dt = Math.min(0.033, (now-last)/1000);
         last = now;
-
         actx.clearRect(0,0,anim.width,anim.height);
 
         let allSettled = true;
         for(const p of parts){
           if(!p.settled){
-            // Bewegung integrieren
-            p.vy += g*dt;
-            p.vx *= air;
+            // Integration
+            p.vy += (G*p.gScale)*dt;
+            p.vx *= p.air;
             p.x  += p.vx*dt;
             p.y  += p.vy*dt;
+
+            // Maus-Kollision (Kreis)
+            if(mouse.active){
+              const dx = p.x - mouse.x;
+              const dy = p.y - mouse.y;
+              const dist = Math.hypot(dx, dy);
+              const R = mouse.r;
+              if(dist < R){
+                const nx = (dist>0? dx/dist : 1);
+                const ny = (dist>0? dy/dist : 0);
+                const overlap = (R - dist) + 0.5;
+                // raus schieben
+                p.x += nx * overlap;
+                p.y += ny * overlap;
+                // Geschwindigkeit an der Normalen reflektieren
+                const vn = p.vx*nx + p.vy*ny;
+                const e = 0.6; // Elastizität
+                if(vn < 0){
+                  p.vx -= (1+e) * vn * nx;
+                  p.vy -= (1+e) * vn * ny;
+                }
+                // tangentiale Dämpfung
+                p.vx *= 0.98; p.vy *= 0.98;
+              }
+            }
 
             // Boden-Kollision
             if(p.y > floor){
               p.y = floor;
-              p.vy = -p.vy * restitution;
-              p.vx *= friction;
+              p.vy = -p.vy * p.rest;
+              p.vx *= p.fric;
+              p.vx += (Math.random()-0.5)*24;
+              p.vy += (Math.random()-0.5)*12;
               p.bounces++;
-              if(Math.abs(p.vy) < 60 || p.bounces >= 3){
-                p.vy = 0; p.settled = true;
-              }
+              if(Math.abs(p.vy) < p.settleV || p.bounces >= p.maxBounces){ p.vy = 0; p.settled = true; }
             }
-            // Rand-Kollisionen
-            if(p.x < cellSize*0.5){ p.x = cellSize*0.5; p.vx = -p.vx*0.6; }
-            if(p.x > anim.width - cellSize*0.5){ p.x = anim.width - cellSize*0.5; p.vx = -p.vx*0.6; }
+            // Seiten-Kollisionen
+            if(p.x < charW*0.5){ p.x = charW*0.5; p.vx = -p.vx * (0.55 + Math.random()*0.25); }
+            if(p.x > anim.width - charW*0.5){ p.x = anim.width - charW*0.5; p.vx = -p.vx * (0.55 + Math.random()*0.25); }
           }
           if(!p.settled) allSettled = false;
           actx.fillStyle = p.color;
@@ -171,17 +240,14 @@
         }
 
         if(allSettled){
-          // Animation beenden
           isAnimating = false;
           anim.style.display = 'none';
           ascii.style.display = 'block';
-          // Nach dem Fall bleibt das Raster unverändert; neu rendern hält es aktuell
           renderASCII(hidden.value);
         } else {
           requestAnimationFrame(frame);
         }
-      }
-      requestAnimationFrame(frame);
+      })(last);
     }
   </script>
 </body>
